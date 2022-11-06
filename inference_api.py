@@ -8,9 +8,9 @@ import io
 from scipy.io.wavfile import write
 
 from flask import Flask, request
-
+import threading
 app = Flask(__name__)
-
+mutex = threading.Lock()
 
 def get_text(text, hps):
     text_norm = text_to_sequence(text, hps.data.text_cleaners)
@@ -26,33 +26,40 @@ net_g = SynthesizerTrn(
     **hps.model)
 _ = net_g.eval()
 
-_ = utils.load_checkpoint("/Users/xingyijin/Downloads/best.pth", net_g, None)
+# _ = utils.load_checkpoint("../tempbest.pth", net_g, None)
 import time
 
 
+def tts(txt):
+    audio = None
+    if mutex.acquire(blocking=False):
+        try:
+            stn_tst = get_text(txt, hps)
+            with torch.no_grad():
+                x_tst = stn_tst.unsqueeze(0)
+                x_tst_lengths = torch.LongTensor([stn_tst.size(0)])
+                t1 = time.time()
+                audio = net_g.infer(x_tst, x_tst_lengths, noise_scale=.667, noise_scale_w=0.8,
+                                            length_scale=1)[0][0, 0].data.float().numpy()
+                t2 = time.time()
+                print("推理时间：", (t2 - t1), "s")
+        finally:
+            mutex.release()
+    return audio
 
-def tts(txt, device="cuda"):
-    stn_tst = get_text(txt, hps)
-    with torch.no_grad():
-        x_tst = stn_tst.unsqueeze(0)
-        x_tst_lengths = torch.LongTensor([stn_tst.size(0)])
-        t1 = time.time()
-        audio = net_g.to(device).infer(x_tst.to(device), x_tst_lengths.to(device), noise_scale=.667, noise_scale_w=0.8,
-                                       length_scale=1)[0][0, 0].cpu().data.float().numpy()
-        t2 = time.time()
-        print("推理时间：", (t2 - t1), "s")
-        return audio
-
-@app.route('/')
-def hello_world():
+@app.route('/tts')
+def text_api():
     text = request.args.get('text','')
     bytes_wav = bytes()
     byte_io = io.BytesIO(bytes_wav)
-    write(byte_io, 22050, tts(f"[JA]{text}[JA]", "cpu"))
+    audio = tts(text)
+    if audio is None:
+        return "服务器忙"
+    write(byte_io, 22050, audio)
     wav_bytes = byte_io.read()
 
     # audio_data = base64.b64encode(wav_bytes).decode('UTF-8')
-    return wav_bytes, 200, {'Content-Type': 'data:audio/wav;'}
+    return wav_bytes, 200, {'Content-Type': 'audio/wav'}
 
 
 if __name__ == '__main__':
