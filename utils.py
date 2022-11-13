@@ -20,8 +20,8 @@ def load_checkpoint(checkpoint_path, model, optimizer=None):
   checkpoint_dict = torch.load(checkpoint_path, map_location='cpu')
   iteration = checkpoint_dict['iteration']
   learning_rate = checkpoint_dict['learning_rate']
-  if optimizer is not None:
-    optimizer.load_state_dict(checkpoint_dict['optimizer'])
+#   if optimizer is not None:
+#     optimizer.load_state_dict(checkpoint_dict['optimizer'])
   saved_state_dict = checkpoint_dict['model']
   if hasattr(model, 'module'):
     state_dict = model.module.state_dict()
