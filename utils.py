@@ -106,6 +106,29 @@ def plot_spectrogram_to_numpy(spectrogram):
   return data
 
 
+def plot_data_to_numpy(x, y):
+  global MATPLOTLIB_FLAG
+  if not MATPLOTLIB_FLAG:
+    import matplotlib
+    matplotlib.use("Agg")
+    MATPLOTLIB_FLAG = True
+    mpl_logger = logging.getLogger('matplotlib')
+    mpl_logger.setLevel(logging.WARNING)
+  import matplotlib.pylab as plt
+  import numpy as np
+
+  fig, ax = plt.subplots(figsize=(10, 2))
+  plt.plot(x)
+  plt.plot(y)
+  plt.tight_layout()
+
+  fig.canvas.draw()
+  data = np.fromstring(fig.canvas.tostring_rgb(), dtype=np.uint8, sep='')
+  data = data.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+  plt.close()
+  return data
+
+
 def plot_alignment_to_numpy(alignment, info=None):
   global MATPLOTLIB_FLAG
   if not MATPLOTLIB_FLAG:

@@ -151,7 +151,7 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
 
         with autocast(enabled=hps.train.fp16_run):
             y_hat, y_hat_mb, l_length,l_pitch, attn, ids_slice, x_mask, z_mask, \
-            (z, z_p, m_p, logs_p, m_q, logs_q) = net_g(x, x_lengths, spec, spec_lengths, speakers, f0)
+            (z, z_p, m_p, logs_p, m_q, logs_q), pred_log_pitch, voice = net_g(x, x_lengths, spec, spec_lengths, speakers, f0)
 
             mel = spec_to_mel_torch(
                 spec,
@@ -231,11 +231,19 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
                 scalar_dict.update({"loss/g/{}".format(i): v for i, v in enumerate(losses_gen)})
                 scalar_dict.update({"loss/d_r/{}".format(i): v for i, v in enumerate(losses_disc_r)})
                 scalar_dict.update({"loss/d_g/{}".format(i): v for i, v in enumerate(losses_disc_g)})
+
+                pred_f0 = torch.exp(pred_log_pitch.detach())
+                voice = voice.detach()
+                voice_gt = torch.zeros_like(f0)
+                voice_gt[f0 != 1] = 1
+
                 image_dict = {
                     "slice/mel_org": utils.plot_spectrogram_to_numpy(y_mel[0].data.cpu().numpy()),
                     "slice/mel_gen": utils.plot_spectrogram_to_numpy(y_hat_mel[0].data.cpu().numpy()),
                     "all/mel": utils.plot_spectrogram_to_numpy(mel[0].data.cpu().numpy()),
-                    "all/attn": utils.plot_alignment_to_numpy(attn[0, 0].data.cpu().numpy())
+                    "all/attn": utils.plot_alignment_to_numpy(attn[0, 0].data.cpu().numpy()),
+                    "all/f0": utils.plot_data_to_numpy(f0[0, :].cpu().numpy(), pred_f0[0, :].cpu().numpy()),
+                    "all/voice": utils.plot_data_to_numpy(voice[0, :].cpu().numpy(), voice_gt[0, :].cpu().numpy())
                 }
                 utils.summarize(
                     writer=writer,
@@ -272,8 +280,7 @@ def evaluate(hps, generator, eval_loader, writer_eval):
             y = y[:2]
             y_lengths = y_lengths[:2]
             speakers = speakers[:2]
-            y_hat, attn, mask, *_ = generator.module.infer(x, x_lengths, speakers, max_len=1000)
-
+            y_hat, attn, mask, *_, pred_log_pitch, voice = generator.module.infer(x, x_lengths, speakers, max_len=1000)
             mel = spec_to_mel_torch(
                 spec,
                 hps.data.filter_length,
