@@ -603,11 +603,7 @@ class PitchPredictor(nn.Module):
             n_layers,
             kernel_size,
             p_dropout)
-        self.proj_f0_coarse = nn.Sequential(
-            nn.Conv1d(hidden_channels, 8, 5, padding=2),
-            nn.ReLU(),
-            nn.Conv1d(8, 256, 1),
-        )
+        self.proj_f0 = nn.Conv1d(hidden_channels, 1, 1)
         if gin_channels != 0:
             self.cond = nn.Conv1d(gin_channels, hidden_channels, 1)
 
@@ -619,16 +615,16 @@ class PitchPredictor(nn.Module):
             x = x + self.cond(g)
         x = self.pitch_net(x * x_mask, x_mask)
         x = x * x_mask
-        pred = self.proj_f0_coarse(x)
-        pred_f0_coarse = torch.argmax(pred, dim=1)
+        pred_log_f0 = self.proj_f0(x).squeeze(1)
+
         if f0 is not None:
             f0_coarse = utils.f0_to_coarse(f0)
         else:
-            shift = 0 if shift is None else shift
-            f0_coarse = pred_f0_coarse+shift
+            shift = 1 if shift is None else shift
+            f0_coarse = utils.f0_to_coarse(torch.exp(pred_log_f0)*shift)
 
         pitch_embedding = self.emb(f0_coarse)
-        return pred, pitch_embedding, pred_f0_coarse
+        return pred_log_f0, pitch_embedding
 
 
 class SynthesizerTrn(nn.Module):
@@ -778,20 +774,23 @@ class SynthesizerTrn(nn.Module):
         #     f0padd
         f0 = f0[:, :m_p.shape[2]]
         #     if f0.shape[1]
-        pred, pitch_embedding, pred_f0_coarse = self.pitch_net(x, y_mask, f0=f0, g=g)
+        pred_log_f0, pitch_embedding = self.pitch_net(x, y_mask, f0=f0, g=g)
 
         #     print(pred_pitch)
         m_p = m_p + pitch_embedding.transpose(1, 2)
         m_p = self.fft_block(m_p, y_mask)
-        # f0要做log 要留意padding
-        gt_f0_coarse = utils.f0_to_coarse(f0)
 
-        l_pitch = F.cross_entropy(pred, gt_f0_coarse)
-        # l_pitch = F.cross_entropy(pred, gt_f0_coarse)-F.cross_entropy(pred, gt_f0_coarse*0+1)
+
+
+        # f0要做log 要留意padding
+        gt_lf0 = torch.log(f0)
+        gt_lf0 = gt_lf0.to(x.device)
+        y_mask_sum = torch.sum(y_mask)
+        l_pitch = torch.sum((gt_lf0 - pred_log_f0) ** 2, 1) / y_mask_sum
 
         z_slice, ids_slice = commons.rand_slice_segments(z, y_lengths, self.segment_size)
         o, o_mb = self.dec(z_slice, g=g)
-        return o, o_mb, l_length, l_pitch, attn, ids_slice, x_mask, y_mask, (z, z_p, m_p, logs_p, m_q, logs_q), pred_f0_coarse
+        return o, o_mb, l_length, l_pitch, attn, ids_slice, x_mask, y_mask, (z, z_p, m_p, logs_p, m_q, logs_q), pred_log_f0
 
     def infer(self, x, x_lengths, sid=None, noise_scale=1, length_scale=1, noise_scale_w=1., shift=None, max_len=None):
         x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths)
@@ -817,7 +816,7 @@ class SynthesizerTrn(nn.Module):
         x = torch.matmul(attn.squeeze(1), x.transpose(1, 2)).transpose(1, 2)
 
         #     print("infer, ",y_mask.shape)
-        pred, pitch_embedding, pred_f0_coarse = self.pitch_net(x, y_mask, shift=shift, g=g)
+        pred_log_f0, pitch_embedding = self.pitch_net(x, y_mask, shift=shift, g=g)
         #     print(m_p.shape,pitch_embedding.shape)
 
         m_p = m_p + pitch_embedding.transpose(1, 2)
@@ -826,7 +825,7 @@ class SynthesizerTrn(nn.Module):
         z_p = m_p + torch.randn_like(m_p) * torch.exp(logs_p) * noise_scale
         z = self.flow(z_p, y_mask, g=g, reverse=True)
         o, o_mb = self.dec((z * y_mask)[:, :, :max_len], g=g)
-        return o, o_mb, attn, y_mask, (z, z_p, m_p, logs_p), pred_f0_coarse
+        return o, o_mb, attn, y_mask, (z, z_p, m_p, logs_p), pred_log_f0
 
     def voice_conversion(self, y, y_lengths, sid_src, sid_tgt):
         assert self.n_speakers > 0, "n_speakers have to be larger than 0."
